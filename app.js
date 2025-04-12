@@ -28,7 +28,8 @@ const EssaySubmission = require('./models/useressay')
 const DiaryPrompt = require('./models/diaryprompt')
 const StoryScore = require('./models/StoryScoreModel')
 const ChatHistory = require('./models/ChatHistory');
-
+const RephraseScore = require("./models/rephraseScore");
+const EssayScoreModel = require("./models/EssayScoreModel");
 
 
 
@@ -55,6 +56,379 @@ const upload = multer({storage:storage})
 const GEMINI_API_KEY = ''
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+
+app.get("/user-essay-history", async (req, res) => {
+  // Get token and user ID from request
+  let token = req.headers.token;
+  let userId = req.query.userId;
+
+  // Check if token exists
+  if (!token) {
+    return res.status(401).json({ Status: "Error", message: "Authentication token is required" });
+  }
+
+  // Verify JWT token
+  jwt.verify(token, "usertoken", async (error, decoded) => {
+    // Handle invalid token
+    if (error || !decoded || !decoded.email) {
+      return res.status(401).json({ Status: "Error", message: "Invalid authentication token" });
+    }
+
+    // Validate user ID
+    if (!userId) {
+      return res.status(400).json({
+        Status: "Error",
+        message: "User ID is required",
+      });
+    }
+
+    try {
+      // Fetch all essays submitted by this user
+      const userEssays = await EssaySubmission.find({ userId }).lean() || [];
+
+      if (!userEssays || userEssays.length === 0) {
+        return res.status(200).json({
+          Status: "Success",
+          message: "No essay submissions found for this user",
+          data: []
+        });
+      }
+
+      console.log("Found user essays:", userEssays.length);
+      
+      // Debug: Check structure of first essay
+      if (userEssays.length > 0) {
+        console.log("Sample essay structure:", JSON.stringify(userEssays[0], null, 2));
+      }
+
+      // Fetch all scores for this user in one query
+      const allScores = await EssayScoreModel.find({
+        userId: userId
+      }).lean();
+
+      console.log("Found user scores:", allScores.length);
+      
+      // Debug: Check structure of first score
+      if (allScores.length > 0) {
+        console.log("Sample score structure:", JSON.stringify(allScores[0], null, 2));
+      }
+
+      // Create a safer mapping function
+      const essayHistory = [];
+      
+      for (const essay of userEssays) {
+        console.log(`Processing essay with ID: ${essay._id}, topicId: ${essay.topicId}`);
+        
+        // Check if attempts array exists
+        if (!essay.attempts || !Array.isArray(essay.attempts)) {
+          console.log(`Warning: Essay ${essay._id} has no attempts array`);
+          continue; // Skip this essay
+        }
+        
+        // Find scores for this specific essay
+        const essayScores = allScores.filter(score => {
+          if (!score.essayId || !essay.topicId) {
+            return false;
+          }
+          return score.essayId.toString() === essay.topicId.toString();
+        });
+        
+        console.log(`Found ${essayScores.length} scores for essay ${essay._id}`);
+        
+        // Map attempts with their scores - safely
+        const attemptsWithScores = [];
+        
+        for (const attempt of essay.attempts) {
+          if (!attempt) {
+            console.log("Warning: Null attempt found");
+            continue;
+          }
+          
+          console.log(`Processing attempt #${attempt.attemptNumber}`);
+          
+          // Find score for this attempt
+          const attemptScore = essayScores.find(score => 
+            score.attemptNumber === attempt.attemptNumber
+          );
+          
+          attemptsWithScores.push({
+            ...attempt,
+            score: attemptScore || null
+          });
+        }
+        
+        // Only add essays that have valid attempts
+        if (attemptsWithScores.length > 0) {
+          essayHistory.push({
+            _id: essay._id,
+            topicId: essay.topicId,
+            topic: essay.topic || "Unknown Topic",
+            category: essay.category || "Uncategorized",
+            attempts: attemptsWithScores,
+            hasScores: essayScores.length > 0,
+            mostRecentAttempt: attemptsWithScores[attemptsWithScores.length - 1].attemptNumber,
+            firstSubmittedAt: attemptsWithScores[0].submittedAt,
+            lastSubmittedAt: attemptsWithScores[attemptsWithScores.length - 1].submittedAt
+          });
+        }
+      }
+
+      // Sort by most recent submission date (descending)
+      essayHistory.sort((a, b) => new Date(b.lastSubmittedAt) - new Date(a.lastSubmittedAt));
+
+      // Log successful operation
+      console.log(`Retrieved ${essayHistory.length} essay history entries for user ${userId}`);
+
+      res.status(200).json({
+        Status: "Success",
+        data: essayHistory
+      });
+    } catch (error) {
+      console.error("Error fetching user essay history:", error);
+      res.status(500).json({ 
+        Status: "Error", 
+        message: "Error fetching essay history",
+        error: error.message 
+      });
+    }
+  });
+});
+
+app.get("/user-rephrase-history", async (req, res) => {
+  // Get token and user ID from request
+  let token = req.headers.token;
+  let userId = req.query.userId;
+
+  // Check if token exists
+  if (!token) {
+    return res.status(401).json({ Status: "Error", message: "Authentication token is required" });
+  }
+
+  // Verify JWT token
+  jwt.verify(token, "usertoken", async (error, decoded) => {
+    // Handle invalid token
+    if (error || !decoded || !decoded.email) {
+      return res.status(401).json({ Status: "Error", message: "Invalid authentication token" });
+    }
+
+    // Validate user ID
+    if (!userId) {
+      return res.status(400).json({
+        Status: "Error",
+        message: "User ID is required",
+      });
+    }
+
+    try {
+      // Fetch all rephrases made by this user
+      const userRephrases = await UserRephraseModel.find({ userId })
+        .populate({
+          path: 'rephraseId',
+          select: 'text difficulty category',  // Include fields you want from the original rephrase
+        })
+        .lean(); // Use lean() for better performance
+
+      if (!userRephrases || userRephrases.length === 0) {
+        return res.status(200).json({
+          Status: "Success",
+          message: "No rephrase attempts found for this user",
+          data: []
+        });
+      }
+
+      // Get all rephraseIds to fetch scores efficiently
+      const rephraseIds = userRephrases.map(rephrase => rephrase.rephraseId._id);
+      
+      // Fetch all scores for this user's rephrases in one query
+      const allScores = await RephraseScore.find({
+        userId: userId,
+        rephraseId: { $in: rephraseIds }
+      }).lean();
+
+      // Map scores to their corresponding rephrases and attempts
+      const rephraseHistory = userRephrases.map(rephrase => {
+        // Find scores for this specific rephrase
+        const rephraseScores = allScores.filter(score => 
+          score.rephraseId.toString() === rephrase.rephraseId._id.toString()
+        );
+
+        // Map attempts with their scores
+        const attemptsWithScores = rephrase.attempts.map(attempt => {
+          // Find score for this attempt
+          const attemptScore = rephraseScores.find(score => 
+            score.attemptNumber === attempt.attemptNumber
+          );
+
+          return {
+            ...attempt,
+            score: attemptScore || null
+          };
+        });
+
+        return {
+          rephraseId: rephrase.rephraseId._id,
+          originalText: rephrase.rephraseId.text,
+          difficulty: rephrase.rephraseId.difficulty,
+          category: rephrase.rephraseId.category,
+          attempts: attemptsWithScores,
+          hasScores: rephraseScores.length > 0
+        };
+      });
+
+      // Log successful operation
+      console.log(`Retrieved ${rephraseHistory.length} rephrase history entries for user ${userId}`);
+
+      res.status(200).json({
+        Status: "Success",
+        data: rephraseHistory
+      });
+    } catch (error) {
+      console.error("Error fetching user rephrase history:", error);
+      res.status(500).json({ 
+        Status: "Error", 
+        message: "Error fetching rephrase history",
+        error: error.message 
+      });
+    }
+  });
+});
+
+app.get("/user-translations", async (req, res) => {
+  let token = req.headers.token;
+
+  if (!token) {
+    return res.status(401).json({ Status: "Invalid Authentication" });
+  }
+
+  jwt.verify(token, "usertoken", async (error, decoded) => {
+    if (error || !decoded || !decoded.email) {
+      return res.status(401).json({ Status: "Invalid Authentication" });
+    }
+
+    try {
+      const userId = req.query.userId;
+
+      if (!userId) {
+        return res.status(400).json({ Status: "Error", message: "User ID is required" });
+      }
+
+      // Find all translation attempts by this user
+      const userTranslations = await UserTranslationModel.find({ userId })
+        .populate('translationId', 'text') // Get the original text from TranslationText
+        .sort({ 'attempts.submittedAt': -1 }) // Sort by newest attempts first
+        .lean(); // For better performance
+
+      if (!userTranslations || userTranslations.length === 0) {
+        return res.status(200).json({ 
+          Status: "Success", 
+          message: "No past translations found", 
+          translations: [] 
+        });
+      }
+
+      // Create an array to hold the formatted translations
+      const formattedTranslations = [];
+
+      // Process each translation
+      for (const translation of userTranslations) {
+        // Skip invalid translations or where translationId is missing
+        if (!translation || !translation.translationId) {
+          console.warn("Skipping invalid translation record:", translation?._id);
+          continue;
+        }
+        
+        // Sort attempts in descending order (newest first)
+        const sortedAttempts = [...(translation.attempts || [])].sort((a, b) => 
+          new Date(b.submittedAt) - new Date(a.submittedAt)
+        );
+        
+        // Skip translations with no attempts
+        if (!sortedAttempts.length) {
+          console.warn("Skipping translation with no attempts:", translation._id);
+          continue;
+        }
+
+        // Fetch all scores for this translation's attempts
+        const TranslationScoreModel = require("./models/translationscoremodel");
+        const scores = await TranslationScoreModel.find({
+          userId: userId,
+          translationId: translation.translationId._id
+        }).sort({ attemptNumber: 1 }).lean();
+
+        // Map scores to their corresponding attempt numbers
+        const scoresByAttempt = {};
+        scores.forEach(score => {
+          scoresByAttempt[score.attemptNumber] = {
+            totalScore: score.totalScore,
+            wordUsageScore: score.wordUsageScore,
+            structureScore: score.structureScore,
+            grammarScore: score.grammarScore,
+            completenessScore: score.completenessScore,
+            feedback: score.feedback,
+            scoredAt: score.scoredAt
+          };
+        });
+
+        // Calculate highest and lowest scores if there are any scores
+        let highestScore = null;
+        let lowestScore = null;
+        let highestScoreAttempt = null;
+        let lowestScoreAttempt = null;
+
+        if (scores.length > 0) {
+          // Sort scores by totalScore in descending order
+          const sortedScores = [...scores].sort((a, b) => b.totalScore - a.totalScore);
+          highestScore = sortedScores[0].totalScore;
+          highestScoreAttempt = sortedScores[0].attemptNumber;
+          
+          // Sort scores by totalScore in ascending order
+          sortedScores.reverse();
+          lowestScore = sortedScores[0].totalScore;
+          lowestScoreAttempt = sortedScores[0].attemptNumber;
+        }
+
+        // Enhance attempts with their scores
+        const enhancedAttempts = sortedAttempts.map(attempt => {
+          const attemptScore = scoresByAttempt[attempt.attemptNumber] || null;
+          return {
+            ...attempt,
+            score: attemptScore
+          };
+        });
+
+        // Build the formatted translation
+        formattedTranslations.push({
+          translationId: translation.translationId._id || null,
+          originalText: translation.translationId.text || "Original text not available",
+          userTranslationId: translation._id,
+          latestAttempt: {
+            ...sortedAttempts[0],
+            score: scoresByAttempt[sortedAttempts[0].attemptNumber] || null
+          },
+          totalAttempts: sortedAttempts.length,
+          attempts: enhancedAttempts,
+          score: translation.score || 0,
+          feedback: translation.feedback || "",
+          scoreStats: {
+            highestScore,
+            highestScoreAttempt,
+            lowestScore,
+            lowestScoreAttempt,
+            totalScored: scores.length
+          }
+        });
+      }
+
+      res.status(200).json({
+        Status: "Success",
+        translations: formattedTranslations
+      });
+    } catch (error) {
+      console.error("Error fetching user translations:", error);
+      res.status(500).json({ Status: "Error", message: "Error fetching translations" });
+    }
+  });
+});
 
 async function isEnglishLearningQuery(query) {
   try {
@@ -977,7 +1351,7 @@ app.post("/score-rephrase", async (req, res) => {
       scoringData.Total = totalScore;
       
       // Store scores in the database
-      const RephraseScore = require("./models/rephraseScore"); // Import the schema
+       // Import the schema
       
       // Check if score already exists for this attempt
       let existingScore = await RephraseScore.findOne({
@@ -1396,7 +1770,7 @@ app.post("/score-essay", async (req, res) => {
       };
 
       // Import the EssayScore model
-      const EssayScoreModel = require("./models/EssayScoreModel");
+      
       
       // Check if a score already exists for this attempt
       let existingScore = await EssayScoreModel.findOne({
@@ -2414,14 +2788,14 @@ app.post("/translation/analyze", async (req, res) => {
       const accuracyCheck = accuracyResult.response.text().trim();
       const accuracyFeedback = accuracyCheck;
 
-      // Step 4: Grammar analysis of user’s translation
+      // Step 4: Grammar analysis of user's translation
       const sentences = userTranslation.split(/(?<=\.|\?|\!)\s+/).filter(s => s.trim().length > 0);
       const numberedText = sentences.map((s, i) => `${i + 1}. ${s}`).join("\n");
 
       const grammarPrompt = `Analyze the grammar of each sentence below. For each sentence:
       - List the original sentence as "Original: [sentence]".
       - Identify ALL grammar mistakes. For each mistake:
-        - Describe the issue in a clear, detailed, and user-friendly way so the user understands what they did wrong and why it’s incorrect.
+        - Describe the issue in a clear, detailed, and user-friendly way so the user understands what they did wrong and why it's incorrect.
         - Use a numbered list (e.g., "1. [issue description]") for each mistake.
       - If no mistakes are found, say "No grammar mistakes found."
       - Provide the corrected sentence as "Fixed: [corrected sentence]". Ensure the "Fixed" sentence applies ALL corrections and is different from the original if mistakes are found.
@@ -2476,19 +2850,26 @@ app.post("/translation/analyze", async (req, res) => {
         }
       });
 
-      // Step 5: Vocabulary enhancement of user’s translation
-      const vocabPrompt = `Enhance the vocabulary in the following numbered sentences, considering the context of the entire paragraph for a cohesive narrative. For each sentence:
-      - Provide the enhanced sentence with improved vocabulary, replacing multiple words (as many as suitable) with synonyms or more precise words that fit the context. Do not change the tense or form of the replaced words (e.g., "send" stays a base verb, not "sent"). Do not correct grammar here; focus only on vocabulary.
-      - List all replaced words and their replacements as a comma-separated string, prefixed with "Replaced: " (e.g., "Replaced: 'big' with 'enormous', 'fast' with 'swiftly'").
-      - Provide brief definitions of all replacement words as a comma-separated string, prefixed with "Meanings: " (e.g., "Meanings: Enormous means very large, Swiftly means moving quickly").
-      Separate each sentence’s analysis with a blank line. Use this format:
+      // Step 5: Vocabulary enhancement of user's translation - MODIFIED
+      const vocabPrompt = `Enhance the vocabulary in the following sentence(s) to an intermediate level - not too basic but also not overly complex or advanced. The goal is to help beginners improve their English without overwhelming them.
+
+      For each sentence:
+      - Improve the vocabulary by replacing basic words with more expressive intermediate-level alternatives
+      - Add appropriate descriptive adjectives and adverbs that naturally fit the context
+      - Make the sentence flow better with improved structure when appropriate
+      - Keep the enhanced sentence natural and accessible while being more expressive
+      - Maintain the original meaning but express it more elegantly
+
+      Example of appropriate enhancement level:
+      Original: "when you forgive yourself for not being perfect your ability to love, create and dream will enhance"
+      Enhanced: "Each time you embrace your imperfections and grant yourself forgiveness, your capacity to love deeply, create meaningfully, and dream boundlessly continues to flourish."
+
+      Use this format for each sentence:
       **<number>.**
       Original: "<original sentence>"
-      Enhanced: "<enhanced sentence>"
+      Enhanced: "<improved sentence with intermediate vocabulary>"
       Replaced: "<original word> with <new word>, <original word> with <new word>, ..."
-      Meanings: "<definition of new word>, <definition of new word>, ..."
-
-      If no enhancement is needed, say "No enhancement needed" for Enhanced, Replaced, and Meanings fields.
+      Meanings: "<simple definition of new word>, <simple definition of new word>, ..."
 
       Input:
       ${numberedText}`;
