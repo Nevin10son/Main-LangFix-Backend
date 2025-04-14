@@ -12,9 +12,7 @@ const DiarySchema = new mongoose.Schema({
     },
   ],
 
-  gratitude: { type: String, default: "" }, // Gratitude section
-  goals: { type: String, default: "" }, // Goals for tomorrow
-  improvement: { type: String, default: "" }, // What user could have done better
+ 
   narrative: { type: String, default: "" }, // Story of the day
 });
 

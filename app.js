@@ -4630,17 +4630,25 @@ app.post("/submit-description", async (req, res) => {
 
     try {
       console.log("Received data:", req.body);
-      const { userId, imageId, description } = req.body;
+      const { userId, imageId, description, attempt = 1 } = req.body;  // Added attempt with default value
 
       if (!userId || !imageId || !description) {
         return res.status(400).json({ error: "All fields are required" });
       }
 
-      const newResponse = new UserImage({ userId, imageId, description });
+      // Create new response with attempt number
+      const newResponse = new UserImage({ 
+        userId, 
+        imageId, 
+        description,
+        attempt  // Store the attempt number
+      });
+      
       await newResponse.save();
 
       res.json({ message: "Description submitted successfully!" });
     } catch (error) {
+      console.error("Error submitting description:", error);
       res.status(500).json({ error: "Error submitting response" });
     }
   });
@@ -4812,7 +4820,7 @@ app.post("/update-translation", async (req, res) => {
 
 app.post("/diary", async (req, res) => {
   let token = req.headers.token;
-  let { userid, date, prompts, gratitude, goals, improvement, narrative } = req.body;
+  let { userid, date, prompts, narrative } = req.body;
 
   if (!token || !userid) {
     return res.status(401).json({ "Status": "Invalid Authentication" });
@@ -4834,9 +4842,7 @@ app.post("/diary", async (req, res) => {
       if (diaryEntry) {
         // ✅ Update existing diary entry
         diaryEntry.prompts = prompts; // [{ promptId, response }, { promptId, response }, ...]
-        diaryEntry.gratitude = gratitude;
-        diaryEntry.goals = goals;
-        diaryEntry.improvement = improvement;
+        
         diaryEntry.narrative = narrative;
         await diaryEntry.save();
       } else {
@@ -4845,9 +4851,6 @@ app.post("/diary", async (req, res) => {
           userId: userid,
           date,
           prompts, // Array of prompt objects
-          gratitude,
-          goals,
-          improvement,
           narrative
         });
         await diaryEntry.save();
